@@ -15,7 +15,7 @@ SAMPLE_RATE = 16000
 # Smaller chunks use less peak GPU memory during transcription but might slightly increase overhead.
 # For GPUs with limited VRAM (e.g., 6-8GB), 5-10 minutes is a good starting point.
 # The Parakeet model can handle up to ~24 mins, but that may require more VRAM.
-CHUNK_DURATION_MS = 1.5 * 60 * 1000  # 10 minutes in milliseconds
+CHUNK_DURATION_MS = 1.5 * 60 * 1000  # 1.5 minutes in milliseconds (NOTE: previous comment said 10 minutes, which was incorrect for this value)
 
 def download_sample_audio():
     """Download a sample audio file for testing."""
@@ -51,11 +51,15 @@ def transcribe_audio_chunk(model, audio_chunk_path, include_timestamps=True):
     """Helper function to transcribe a single audio chunk."""
     return model.transcribe([audio_chunk_path], timestamps=include_timestamps)
 
-def transcribe_audio(audio_path, include_timestamps=True):
+def transcribe_audio(audio_path, chunk_duration_minutes, include_timestamps=True):
     """Transcribe audio file, chunking if necessary."""
     model = load_model()
     if not audio_path:
         return "No audio file provided", None, None
+
+    current_chunk_duration_ms = chunk_duration_minutes * 60 * 1000
+    if current_chunk_duration_ms <= 0:
+        return "Chunk duration must be positive.", None, None
 
     overall_processing_time = 0
     combined_text = ""
@@ -69,7 +73,7 @@ def transcribe_audio(audio_path, include_timestamps=True):
         duration_ms = len(audio)
         print(f"Audio duration: {duration_ms / 1000.0:.2f} seconds")
 
-        if duration_ms <= CHUNK_DURATION_MS:
+        if duration_ms <= current_chunk_duration_ms:
             print(f"Audio is short enough ({duration_ms/1000.0:.2f}s), processing as a single chunk.")
             start_time = time.time()
             # NeMo loads this chunk file to GPU for processing
@@ -88,13 +92,13 @@ def transcribe_audio(audio_path, include_timestamps=True):
             return text, None, f"Processing time: {overall_processing_time:.2f} seconds (single chunk)"
 
         else:
-            num_chunks = math.ceil(duration_ms / CHUNK_DURATION_MS)
-            print(f"Audio too long ({duration_ms/1000.0:.2f}s). Splitting into {num_chunks} chunks of max {CHUNK_DURATION_MS/1000.0:.0f}s each.")
+            num_chunks = math.ceil(duration_ms / current_chunk_duration_ms)
+            print(f"Audio too long ({duration_ms/1000.0:.2f}s). Splitting into {num_chunks} chunks of max {current_chunk_duration_ms/1000.0:.2f}s each.")
             current_offset_s = 0
 
             for i in range(num_chunks):
-                start_ms = i * CHUNK_DURATION_MS
-                end_ms = min((i + 1) * CHUNK_DURATION_MS, duration_ms)
+                start_ms = i * current_chunk_duration_ms
+                end_ms = min((i + 1) * current_chunk_duration_ms, duration_ms)
                 print(f"Preparing chunk {i+1}/{num_chunks}: from {start_ms/1000.0:.2f}s to {end_ms/1000.0:.2f}s")
                 # Slicing and exporting happens with data in CPU RAM / on disk
                 chunk = audio[start_ms:end_ms]
@@ -153,23 +157,23 @@ def transcribe_audio(audio_path, include_timestamps=True):
             torch.cuda.empty_cache()
             print("CUDA cache cleared after transcription attempt.")
 
-def process_upload(audio, timestamps):
+def process_upload(audio, chunk_duration_minutes_ui, timestamps):
     """Process uploaded audio file."""
     if audio is None:
         return "No audio uploaded", None, None
-    return transcribe_audio(audio, timestamps)
+    return transcribe_audio(audio, chunk_duration_minutes_ui, timestamps)
 
-def process_microphone(audio, timestamps):
+def process_microphone(audio, chunk_duration_minutes_ui, timestamps):
     """Process microphone input."""
     if audio is None:
         return "No audio recorded", None, None
-    return transcribe_audio(audio, timestamps)
+    return transcribe_audio(audio, chunk_duration_minutes_ui, timestamps)
 
-def process_sample(timestamps):
+def process_sample(chunk_duration_minutes_ui, timestamps):
     """Process sample audio."""
     sample_path = download_sample_audio()
     if sample_path:
-        return transcribe_audio(sample_path, timestamps)
+        return transcribe_audio(sample_path, chunk_duration_minutes_ui, timestamps)
     return "Failed to download sample audio", None, None
 
 # Create the Gradio interface
@@ -177,6 +181,15 @@ with gr.Blocks(title="Parakeet ASR Transcription") as demo:
     gr.Markdown("# Parakeet TDT 0.6B ASR Transcription")
     gr.Markdown("This demo uses NVIDIA's Parakeet TDT 0.6B model for speech recognition. It supports accurate word-level timestamps, automatic punctuation, and capitalization.")
     
+    chunk_duration_input = gr.Number(
+        label="Max Chunk Duration (minutes)", 
+        value=1.5,  # Defaulting to the current value in the code (1.5 minutes)
+        minimum=0.5, 
+        maximum=24, # Parakeet can handle up to ~24 mins with enough VRAM
+        step=0.5,
+        info="Set the maximum duration for audio chunks. Smaller values use less peak GPU memory."
+    )
+
     with gr.Tab("Upload Audio"):
         with gr.Row():
             with gr.Column():
@@ -191,7 +204,7 @@ with gr.Blocks(title="Parakeet ASR Transcription") as demo:
         
         upload_button.click(
             fn=process_upload,
-            inputs=[audio_input, timestamps_checkbox],
+            inputs=[audio_input, chunk_duration_input, timestamps_checkbox],
             outputs=[text_output, segments_output, info_output],
         )
     
@@ -209,7 +222,7 @@ with gr.Blocks(title="Parakeet ASR Transcription") as demo:
         
         mic_button.click(
             fn=process_microphone,
-            inputs=[mic_input, mic_timestamps_checkbox],
+            inputs=[mic_input, chunk_duration_input, mic_timestamps_checkbox],
             outputs=[mic_text_output, mic_segments_output, mic_info_output],
         )
     
@@ -226,17 +239,15 @@ with gr.Blocks(title="Parakeet ASR Transcription") as demo:
         
         sample_button.click(
             fn=process_sample,
-            inputs=[sample_timestamps_checkbox],
+            inputs=[chunk_duration_input, sample_timestamps_checkbox],
             outputs=[sample_text_output, sample_segments_output, sample_info_output],
         )
     
     gr.Markdown("### Important Notes for GPU Usage & Large Files:")
-    gr.Markdown("- **Chunking**: Long audio files are automatically split into smaller chunks (default: 10 minutes) for processing. This helps manage GPU memory.")
+    gr.Markdown("- **Chunking**: Long audio files are automatically split into smaller chunks for processing. You can set the maximum chunk duration above. This helps manage GPU memory.")
     gr.Markdown("- **`ffmpeg`**: Audio processing (like chunking) requires `ffmpeg`. If not installed, you might encounter errors. (e.g., `sudo apt install ffmpeg` on Debian/Ubuntu).")
     gr.Markdown("- **GPU VRAM**: Requires an NVIDIA GPU. While the model is 0.6B parameters, processing audio (especially longer chunks) needs significant VRAM (2GB is an absolute minimum, 6GB+ recommended). The default 10-minute chunk size is a balance; for very limited VRAM, you might need to edit `CHUNK_DURATION_MS` in the script to be even smaller (e.g., 5 minutes).")
-    gr.Markdown("- **CUDA Out of Memory?** If you see this error:  ")
-    gr.Markdown("  1. **Set Environment Variable**: Before running the script, try: `export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`")
-    gr.Markdown("  2. **Reduce Chunk Size**: Edit `CHUNK_DURATION_MS` at the top of `asr_app.py` to a smaller value (e.g., `5 * 60 * 1000` for 5 minutes). ")
+    gr.Markdown("  2. **Reduce Chunk Size**: Use the input field above to set a smaller value (e.g., 5 minutes or less). ")
     gr.Markdown("  3. **Close Other GPU Apps**: Ensure other applications are not consuming VRAM.")
     gr.Markdown("- **`cuda-python`**: For potentially better performance with NeMo, install `cuda-python>=12.3` (`pip install cuda-python>=12.3`).")
     gr.Markdown("- **Model Download**: The model (~600MB) is downloaded on first use.")
