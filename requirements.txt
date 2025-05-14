@@ -1,0 +1,5 @@
+gradio==3.50.2
+nemo_toolkit[asr]
+requests>=2.28.0
+cuda-python>=12.3
+pydub>=0.25.1 
