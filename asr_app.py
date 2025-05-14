@@ -185,7 +185,7 @@ with gr.Blocks(title="Parakeet ASR Transcription") as demo:
         label="Max Chunk Duration (minutes)", 
         value=1.5,  # Defaulting to the current value in the code (1.5 minutes)
         minimum=0.5, 
-        maximum=24, # Parakeet can handle up to ~24 mins with enough VRAM
+        maximum=10000, # Parakeet can handle up to ~24 mins with enough VRAM
         step=0.5,
         info="Set the maximum duration for audio chunks. Smaller values use less peak GPU memory."
     )
